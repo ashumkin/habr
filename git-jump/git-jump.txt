@@ -1,0 +1,46 @@
+Subject: Vim в помощь git diff/grep/merge...
+
+Здравствуй, Хабр!
+
+Как и, наверное, многие, я заинтересовался Git'ом после просмотра <a href="http://habrahabr.ru/post/71115/">знаменитого</a> <a href="http://www.youtube.com/watch?v=4XpnKHJAok8">выступления</a> Линуса Торвальдса в Google. Произошло это в конце лета 2009-го. С тех пор утекло много воды, я поднаторел во владении им, a SVN был постепенно отправлен на пенсию (благо, на проекте я был сам себе хозяин).
+Я читал много документации, следил за обновлениями, компилировал(-ую) Git под Cygwin, сделал несколько своих патчей (правда, из-за моей лени, некоторые из них до сих пор не приняли в главную ветку, но они живут у меня уже года 2 с половиной отдельным <a href="https://github.com/ashumkin/git">форком</a>)
+Не скажу, что знаю Git досконально, но знаю о нём много. Однако, сегодня меня настигло откровение, о котором я им хочу поведать, ибо уверен, что знание это окажется полезным многим.
+<habracut>
+Один из "режимов" работы с Git, который я использую - это поиск текста в исходных кодах (на предмет использования, например, хранимой процедуры как в коде SQL сервера, так и в коде клиентского приложения). Выполняется это, как известно, командой
+<code>$ git grep</code>
+Однако, это лишь даёт список файлов с номерами строк (ключ <b>-n</b>) вхождения искомого выражения (ну, и при указании ключей <b>-A/-B/-C</b> - можно увеличить выводимый контекст).
+Например, в моём проекте
+<code>$ git grep -nIFw DeleteOldData</code>
+даст примерно такой вывод:
+<code>DBScripts/Check_Loaded.PRC.sql:35:      EXEC dbo.DeleteOldData 0, @ID</code>
+<code>DBScripts/Check_Loaded.PRC.sql:36:      EXEC dbo.DeleteOldData 1, @ID</code>
+<code>DBScripts/Check_Loaded.PRC.sql:44:            EXEC dbo.DeleteOldData 2, @ID</code>
+<code>DBScripts/DeleteOldData.PRC.sql:1:if exists (select * from dbo.sysobjects where id = object_id(N'[dbo].[DeleteOldData]') and </code>
+<code>DBScripts/DeleteOldData.PRC.sql:2:drop procedure [dbo].[DeleteOldData]</code>
+<code>DBScripts/DeleteOldData.PRC.sql:11:CREATE PROCEDURE dbo.DeleteOldData</code>
+<code>DBScripts/DeleteOldData.PRC.sql:65:        RAISERROR('Programmer''s error: proc dbo.DeleteOldData: @Step has incorrect value'</code>
+<code>DBScripts/list.txt:263:DeleteOldData.PRC.sql</code>
+<code>Upd_DB.pas:130:procedure DeleteOldData(pInfo: TDeleteOldDataInfoProc;</code>
+<code>Upd_DB.pas:269:procedure DeleteOldData(pInfo: TDeleteOldDataInfoProc;</code>
+<code>Upd_DB.pas:286:    'EXEC dbo.DeleteOldData :Step, :ID_L, :BAN',</code>
+<code>tests/Resources/Script-2.6.x.sql:479:if exists (select * from dbo.sysobjects where id = object_id(N'[dbo].[DeleteOldData]') a</code>
+<code>tests/Resources/Script-2.6.x.sql:480:drop procedure [dbo].[DeleteOldData]</code>
+<code>...</code>
+
+но чтобы получить полное представление о контексте, я всё же открываю эти файлы в редакторе. А вот чтобы это сделать, нужно скопировать (для открытия с помощью Vim я использовал корректированную "копи-пасту" вида <code>vim <filename> -c:<line_num></code>)
+или запомнить их имена, номера строк и т. д. и открыть в другом любимом редакторе, что, понятное дело, занятие утомительное и неблагодарное для любого, а тем более для [ленивого] разработчика.
+Сегодня же, ковырясь в исходниках Git в поисках примеров оформления своих дополнительных команд, я набрёл на скрипт <b>git-jump</b>, который открыл мне глаза на то, что я столько времени убил впустую на вышеперечисленные действия.
+Оказывается <code>vim</code> понимает формат вывода <code>git grep -n</code>, который является ничем иным как форматом <i>quickfix</i> для <code>vim</code> (если запустить Vim с параметрами <b>-q</b> <i>&lt;quickfix_file&gt;</i>, то наш любимый редактор откроет первый файл из списка в файле <i>&lt;quickfix_file&gt;</i>, расположив курсор на заданной строке; как работать с этим можно посмотреть у @Paul <a href="http://habrahabr.ru/post/28362/">здесь</a> и в <a href="http://vimdoc.sourceforge.net/htmldoc/quickfix.html"><code>vim :help quickfix</code></a>), а <b>git-jump</b> просто автоматизирует всю "чёрную" работу по подготовке такого файла.
+Кроме использования в связке с <code>git grep</code>, скрипт <b>git-jump</b> может переходить к внесённым незакоммиченным изменениям (как добавленным в индекс, так и нет), а также, при слиянии, к конфликтным участкам кода.
+<code>$ git jump diff [--staged]</code>
+<code>$ git jump merge</code>
+ну и уже упомянутый
+<code>$ git jump grep</code>
+
+Для того, чтобы команда <code>git jump</code> стала доступна, необходимо скопировать скрипт <a href="https://github.com/git/git/blob/maint/contrib/git-jump/git-jump">git-jump</a> (лежит в <i>&lt;Git source&gt;/contrib/git-jump/</i>) в директорию, доступную в PATH (у меня это <b>~/bin</b>).
+
+См. также на тему Vim + quickfix:
+http://habrahabr.ru/post/28362/
+http://lukas.zapletalovi.com/2012/12/vim-use-case-make-and-quick-fix.html
+http://www.tldp.org/HOWTO/C-editing-with-VIM-HOWTO/quickfix.html
+
