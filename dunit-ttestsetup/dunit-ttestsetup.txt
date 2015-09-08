@@ -1,0 +1,438 @@
+Subject: Как организовать тестирование БД в dUnit.
+
+Здравствуй, Хабр!
+
+Как известно, в xUnit-фреймворках, простейший test-case состоит из последовательности вызовов SetUp, TestSomething, TearDown. И довольно часто в unit-тестировании требуется подготовить какие-то ресурсы перед основными тестами. Типичный пример этого - соединение с базой данных. И логика подсказывает нам, что было бы весьма затратно, запуская несколько тестов, перед каждым устанавливать соединение с БД в SetUp, и отключаться в TearDown.
+
+<spoiler title="Пример модуля">
+
+<source lang="delphi">
+...
+type
+  TTestDB1 = class(TTestCase)
+  protected
+  public
+    procedure SetUp; override;
+    procedure TearDown; override;
+  published
+    procedure TestDB1_1;
+    procedure TestDB1_2;
+  end;
+...
+implementation
+...
+procedure TTestDB1.SetUp;
+begin
+  inherited;
+  // connect to DB
+end;
+
+procedure TTestDB1.TearDown;
+begin
+  // disconnect from DB
+  inherited;
+end;
+...
+initialization
+  RegisterTest(TTestDB1.Suite);
+end.
+</source>
+<img src="https://habrastorage.org/files/fa1/d30/099/fa1d30099658418abaacfd185d3052ce.png"/>
+</spoiler>
+
+Схема вызовов будет такая:
+<source lang="delphi">
+-- TTestDB1.SetUp
+---- TTestDB1.TestDB1_1
+-- TTestDB1.TearDown
+-- TTestDB1.SetUp
+---- TTestDB1.TestDB1_2
+-- TTestDB1.TearDown
+</source>
+<i>К тому же с БД может статься, что перед тем, как к БД подключиться, её нужно создать с требуемой структурой.</i>
+
+Для решения такой задачи в <a href="http://dunit.sourceforge.net/">dUnit</a> есть класс TTestSetup (описан в модуле TTestExtensions).
+<habracut>
+Он, по сути, реализует тот же интерфейс <code>ITest</code>, что и TTestCase, то есть ту же схему: SetUp, Test..., TearDown, только вместо вызова тестов происходит вызов всего test-case'а, указанного при его создании.
+Т.е. видоизменив модуль:
+
+<source lang="delphi">
+uses
+  ...
+  TestExtensions;
+
+type
+  TTestDBSetup = class(TTestSetup)
+  public
+    procedure SetUp; override;
+    procedure TearDown; override;
+  // published-методы в TTestSetup не запускаются
+  end;
+
+  TTestDB1 = ...
+...
+implementation
+...
+initialization
+  RegisterTest(TTestDBSetup.Create(TTestDB1.Suite));
+end.
+</source>
+получим схему вызовов:
+<source lang="delphi">
+-- TTestDBSetup.SetUp
+
+---- TTestDB1.SetUp
+------ TTestDB1.TestDB1_1
+---- TTestDB1.TearDown
+
+---- TTestDB1.SetUp
+------ TTestDB1.TestDB1_2
+---- TTestDB1.TearDown
+
+-- TTestDBSetup.TearDown
+</source>
+<img src="https://habrastorage.org/files/268/fd1/eb6/268fd1eb6a6f4469b8a4df5d25710a42.png"/>
+
+По сути, это схема suite + test-cases.
+Таким образом, устанавливая соединение к БД в TTestDBSetup.SetUp, мы сделаем это лишь однажды перед запуском TestDB1_1 и TestDB1_2.
+
+Это доcтаточно понятно, когда у нас только один test-case с тестами, требующий соединения с БД. Но что делать, когда мы хотим создать второй test-case, которому также нужно соединение с БД (назовём его TTestDB2 с методами TestDB2_1, TestDB2_2, и т.д)?
+
+Конструктор <code>TTestSetup.Create</code> описан как
+<source lang="delphi">
+constructor TTestSetup.Create(ATest: ITest; AName: string = '');
+</source>
+то есть "включать" в suite можно только лишь один test-case.
+Если мы напишем так:
+<source lang="delphi">
+  RegisterTest(TTestDBSetup.Create(TTestDB1.Suite));
+  RegisterTest(TTestDBSetup.Create(TTestDB2.Suite));
+</source>
+то получим вызовы по схеме:
+<source lang="delphi">
+-- TTestDBSetup.SetUp
+
+---- TTestDB1.SetUp
+------ TTestDB1.TestDB1_1
+---- TTestDB1.TearDown
+
+---- TTestDB1.SetUp
+------ TTestDB1.TestDB1_2
+---- TTestDB1.TearDown
+
+-- TTestDBSetup.TearDown
+
+-- TTestDBSetup.SetUp
+
+---- TTestDB2.SetUp
+------ TTestDB2.TestDB2_1
+---- TTestDB2.TearDown
+
+---- TTestDB2.SetUp
+------ TTestDB2.TestDB2_2
+---- TTestDB2.TearDown
+
+-- TTestDBSetup.TearDown
+</source>
+<img src="https://habrastorage.org/files/b46/bed/d0e/b46bedd0ec0a4bc19b21a42afcd69c8c.png"/>
+
+Это не то, что мы хотим. Мы ведь хотим подключиться к БД лишь единожды.
+
+Тут и начинается, собственно, то, что побудило меня написать эту статью. Обратим внимание на второй вариант метода RegisterTest:
+<source lang="delphi">
+procedure RegisterTest(SuitePath: string; test: ITest);
+begin
+  assert(assigned(test));
+  if __TestRegistry = nil then CreateRegistry;
+  RegisterTestInSuite(__TestRegistry, SuitePath, test);
+end;
+</source>
+что за <code>SuitePath</code>?
+Смотрим <code>RegisterTestInSuite</code>
+<spoiler>
+<source lang="delphi">
+procedure RegisterTestInSuite(rootSuite: ITestSuite; path: string; test: ITest);
+...
+begin
+  if (path = '') then
+  begin
+    // End any recursion
+    rootSuite.addTest(test);
+  end
+  else
+  begin
+    // Split the path on the dot (.)
+    dotPos := Pos('.', Path);
+    if (dotPos <= 0) then dotPos := Pos('\', Path);
+    if (dotPos <= 0) then dotPos := Pos('/', Path);
+    if (dotPos > 0) then
+    begin
+      suiteName := Copy(path, 1, dotPos - 1);
+      pathRemainder := Copy(path, dotPos + 1, length(path) - dotPos);
+    end
+    else
+    begin
+      suiteName := path;
+      pathRemainder := '';
+    end;
+...
+</source>
+</spoiler>
+и видим, что SuitePath разбивается на части, а разделитель этих частей - точка, т.е. это некий "путь suite", в который добавляется регистрируемый test-case.
+
+Пробуем TestDB2 зарегистрировать так (чтобы добавить TTestDB2 "дочерним узлом" в TTestDBSetup):
+<source lang="delphi">
+RegisterTest('Setup decorator ((d) TTestDB1)', TTestDB2.Suite);
+</source>
+не получилось:
+<img src="https://habrastorage.org/files/604/0e5/282/6040e5282b334545b66bdff0b32f4752.png"/>
+
+Смотрим опять код <code>RegisterTestInSuite</code>
+<spoiler>
+<source lang="delphi">
+procedure RegisterTestInSuite(rootSuite: ITestSuite; path: string; test: ITest);
+...
+begin
+...
+      currentTest.queryInterface(ITestSuite, suite);
+      if Assigned(suite) then
+      begin
+...
+</source>
+</spoiler>
+видим, что test-case добавляется в ITestSuite, а TTestSetup не реализует этот интерфейс.
+Как же быть?
+
+Тут подглядываем, например, в библиотеку IndySoap (в ней есть тесты dUnit, организованные по группам) и <a href="https://github.com/ashumkin/IndySoap/blob/master/tests/IdSoapTestsRegistration.pas">видим там</a> примерно следующее (запишем сразу применительно к нашим тестам):
+
+<source lang="delphi">
+...
+function DBSuite: ITestSuite;
+begin
+  Result := TTestSuite.Create('DB tests');
+  Result.AddTest(TTestDB1.Suite);
+  Result.AddTest(TTestDB2.Suite);
+end;
+...
+initialization
+  RegisterTest(TTestDBSetup.Create(DBSuite));
+</source>
+То есть мы создаём suite из наших test-case'ов, а уже этот suite добавляем в TTestSetup.
+<img src="https://habrastorage.org/files/0c3/810/6eb/0c38106eb69640838cb5d970e8dabf9b.png"/>
+
+И вроде бы, всё работает, и всё хорошо. На этом можно бы и закончить.
+
+Но если (точнее, "когда") мы будем добавлять ещё тесты БД (назовём их, TTestDB3), то нам придётся добавлять их и в DBSuite:
+<source lang="delphi">
+...
+function DBSuite: ITestSuite;
+begin
+  ...
+  Result.AddTest(TTestDB3.Suite);
+end;
+...
+</source>
+Кроме того, по-хорошему, их надо выносить в отдельный модуль, а уже этот модуль добавлять в модуль с функцией DBSuite.  Это изменение DBSuite лично мне не очень нравится (к тому же, визуально в иерархии тестов добавляется "лишний" узел "DB tests", хотя TTestDB1/TTestDB2 могли бы "принадлежать" сразу TTestDBSetup). Я хочу лишь добавить модуль тестов в проект и они "автоматически" добавились бы в TTestDBSetup.
+
+Что ж, сделаем как хотим:
+Во-первых, мне не нравится имя Setup'а вида "Setup decorator ((d)...". К тому же, потом, когда мы будем регистрировать другие тесты в этот Setup, мы будем использовать это имя.
+Поменяем. Для этого обратим внимание на
+
+<source lang="delphi">
+function TTestSetup.GetName: string;
+begin
+  Result := Format(sSetupDecorator, [inherited GetName]);
+end;
+</source>
+и на параметр <code>AName</code> в
+<source lang="delphi">
+constructor TTestSetup.Create(ATest: ITest; AName: string = '');
+</source>
+который, в итоге присваивается
+<source lang="delphi">
+constructor TAbstractTest.Create(AName: string);
+...
+  FTestName := AName;
+...
+</source>
+Так что, если мы переопределим
+<source lang="delphi">
+...
+TTestDBSetup = ...
+  public
+    function GetName: string; override;
+...
+implementation
+
+...
+function TTestDBSetup.GetName: string;
+begin
+  Result := FTestName;
+end;
+...
+initialization
+  RegisterTest(TTestDBSetup.Create(DBSuite, 'DB'));
+</source>
+получим
+<img src="https://habrastorage.org/files/d95/619/91a/d9561991ad5540008500215b158e5863.png"/>
+
+Теперь хочется регистрировать test-case'ы сразу при подключении модуля в проект.
+То есть так
+<source lang="delphi">
+unit uTestDB3;
+...
+initialization
+  RegisterTest('DB', TTestDB3.Suite));
+</source>
+Для этого надо (вспомним <code>RegisterTestInSuite</code>), чтобы TTestDBSetup реализовывал интерфейс ITestSuite.
+<source lang="delphi">
+...
+ ITestSuite = interface(ITest)
+    ['{C20E38EF-7369-44D9-9D84-08E84EC1DCF0}']
+
+    procedure AddTest(test: ITest);
+    procedure AddSuite(suite : ITestSuite);
+  end;
+</source>
+Там всего-то два метода:
+<source lang="delphi">
+...
+  TTestDBSetup = class(TTestSetup, ITestSuite)
+  public
+    procedure AddTest(test: ITest);
+    procedure AddSuite(suite : ITestSuite);
+  end;
+...
+implementation
+...
+procedure TTestDBSetup.AddTest(test: ITest);
+begin
+  Assert(Assigned(test));
+
+  FTests.Add(test);
+end;
+
+procedure TTestDBSetup.AddSuite(suite: ITestSuite);
+begin
+  AddTest(suite);
+end;
+...
+</source>
+<img src="https://habrastorage.org/files/bba/c96/f9d/bbac96f9dd674cd4add610d4300ed5af.png"/>
+
+Получилось!
+
+Однако, при запуске (F9, кстати) оказывается, что тесты TTestDB3 не выполняются
+<img src="https://habrastorage.org/files/0df/0f5/430/0df0f543094f42b395bec6fa8a3a88c3.png"/>
+
+Чтобы понять почему, посмотрим на реализацию
+
+<source lang="delphi">
+procedure TTestDecorator.RunTest(ATestResult: TTestResult);
+begin
+  FTest.RunWithFixture(ATestResult);
+end;
+</source>
+т.е. тесты запускаются только те (<code>FTest</code>), которые были заданы при создании TTestDBSetup
+<spoiler>
+<source lang="delphi">
+constructor TTestDecorator.Create(ATest: ITest; AName: string);
+begin
+  ...
+  FTest := ATest;
+  FTests:= TInterfaceList.Create;
+  FTests.Add(FTest);
+end;
+</source>
+</spoiler>
+а которые мы добавили позже  (<code>FTests</code>) - нет. Запустим и их, переопределив RunTest:
+<source lang="delphi">
+...
+  TTestDBSetup = ...
+  protected
+    procedure RunTest(ATestResult: TTestResult); override;
+...
+  end.
+...
+procedure TTestDBSetup.RunTest(ATestResult: TTestResult);
+var
+  i: Integer;
+begin
+  inherited;
+  // пропустим первый элемент, т.к. это FTest
+  for i := 1 to FTests.Count - 1 do
+    (FTests[i] as ITest).RunWithFixture(ATestResult);
+end;
+</source>
+Запускаем
+<img src="https://habrastorage.org/files/6fa/d9d/802/6fad9d802d7a4983a2693fcc6c4259eb.png"/>
+
+Вот теперь, вроде, всё ок. Однако, если приглядеться, то увидим, что в статистике количество тестов - 4, а было запущено - 6. Очевидно, наши добавленные тесты не учитываются. Непорядок.
+Наведём красоту:
+<spoiler>
+<source lang="delphi">
+
+...
+  TTestDBSetup = ...
+  protected
+...
+    function CountTestInterfaces: Integer;
+    function CountEnabledTestInterfaces: Integer;
+  public
+...
+    function CountTestCases: Integer; override;
+    function CountEnabledTestCases: Integer; override;
+  end;
+...
+
+function TTestDBSetup.CountTestCases: Integer;
+begin
+  Result := inherited;
+  if Enabled then
+    Inc(Result, CountTestsInterfaces);
+end;
+
+function TTestDBSetup.CountTestInterfaces: Integer;
+var
+  i: Integer;
+begin
+  Result := 0;
+  // skip FIRST test case (it is FTest)
+  for i := 1 to FTests.Count - 1 do
+    Inc(Result, (FTests[i] as ITest).CountTestCases);
+end;
+
+function TTestDBSetup.CountEnabledTestCases: Integer;
+begin
+  Result := inherited;
+  if Enabled then
+    Inc(Result, CountEnabledTestInterfaces);
+end;
+
+function TTestDBSetup.CountEnabledTestInterfaces: Integer;
+var
+  i: Integer;
+begin
+  Result := 0;
+  // skip FIRST test case (it is FTest)
+  for i := 1 to FTests.Count - 1 do
+    if (FTests[i] as ITest).Enabled then
+      Inc(Result, (FTests[i] as ITest).CountTestCases);
+end;
+...
+
+</source>
+<i>Здесь CountEnabledTestCases и CountEnabledTestInterfaces - вспомогательные функции.</i>
+
+<b>Nota bene.</b> В GUI варианте учитывается CountEnabledTestCases, а в консольном - CountTestCases.
+</spoiler>
+<img src="https://habrastorage.org/files/29d/9a0/84f/29d9a084f85d4da8bb655c36de102421.png"/>
+<img src="https://habrastorage.org/files/620/e01/061/620e010613e744f6b49c6200aa15a6ab.png"/>
+
+Вот теперь порядок.
+
+Дочитавший до конца читатель может спросить, а стОит ли так заморачиваться вместо использования функции по типу вышеописанной DBSuite? Я и сам об этом сейчас подумал. Но для меня один из плюсов данного решения состоит в том, что переделка одного моего проекта, в котором я, ещё до того, как разобрался с dUnit настолько, делал немного по-другому. И для приведения к такой красивости там понадобится подправить лишь один пару методов (ну и добавить вышеописанное в базовый класс).
+
+P.S. Исходные коды примера - https://github.com/ashumkin/habr-dunit-ttestsetup-demo
+</habracut>
+
