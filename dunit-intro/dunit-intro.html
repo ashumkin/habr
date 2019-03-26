@@ -1,0 +1,133 @@
+Эта вводная статья в TDD именно в Delphi задумалась как попытка привлечь на <s>тёмную</s> сторону тех моих коллег, кто слышал от меня постоянно "тесты-тесты-тесты", но не в силу разных причин не в курсе с какой стороны подступиться к этому непонятному (и потому страшному) зверю. А поскольку знаниями нужно делиться, я решил оформить это в виде статьи для более широкого круга читателей.
+
+Итак, часть первая, вводная: <s>что такое unit-тесты?</s> пожалуй, отправлю <a href="https://habrahabr.ru/post/169381/">читать сюда</a>
+
+Часть вторая: терминология.
+Тест (test-case) - это метод, который совершает проверку выходных условий при определённых входных.
+Есть набор тестов - это test-suite.
+
+Часть третья: с чего начать?
+В IDE Delphi есть мастер/wizard по созданию проекта тестов и тест-кейсов. Но я не люблю ходить по мастерам, которые "что-то там делают, а потом я изменил, а оно сломалось". Я люблю знать и понимать, что именно происходит. О том и расскажу.
+<habracut>Итак, <spoiler title="основа проекта:">
+<source lang="delphi">
+program dunit_intro;
+
+{$IFDEF CONSOLE_TEST_RUNNER}
+{$APPTYPE CONSOLE}
+{$ENDIF}
+
+uses
+  TextTestRunner,
+  GUITestRunner;
+
+begin
+  if IsConsole then
+    TextTestRunner.RunRegisteredTests
+  else
+    GUITestRunner.RunRegisteredTests;
+end.
+
+</source>
+</spoiler>
+В зависимости от типа исполняемого файла запускается либо вывод в консоль, либо открывается GUI форма (N.B. в ТАКОМ проекте форма не открывается, т.к. ещё нет зарегистрированных тестов).
+
+Часть четвёртая: как оно работает?
+В модуль наших тестов подключается модуль <code>
+TestFramework</code>.
+Описывается класс-наследник (назовём его <code>
+TMyTestCase</code>) от класса <code>
+TTestCase</code>. Его published-методы - это тесты (я обычно называю их <code>
+TestSomething</code>, <code>
+TestSomethingWithConditions</code>). В них вызываем методы семейства <code>
+CheckTrue/CheckFalse/CheckEquals...()</code> - это сами проверки.
+Есть ещё два метода: .<code>
+SetUp</code> и <code>
+.TearDown</code>. Они вызываются перед (SetUp) и после (TearDown) каждого теста. В них можно создавать и уничтожать экземпляр тестируемого класса (чтобы не делать этого в каждом тест-методе).
+Этот класс регистрируется вызовом метода <source lang="delphi">
+RegisterTest(TMyTestCase.Suite)
+</source> либо <source lang="delphi">
+RegisterTests([TMyTestCase1.Suite, TMyTestCase2.Suite])
+</source>, как правило, в секции инициализации модуля
+<spoiler title="пример, dunit_tests1.pas:">
+<source lang="delphi">
+unit dunit_tests1;
+
+interface
+
+uses
+  TestFramework;
+
+type
+  TMyTestCase = class(TTestCase)
+  protected
+    FClassInstance: TObject;
+  public
+    procedure SetUp; override;
+    procedure TearDown; override;
+  published
+    procedure TestClassInitialization;
+  end;
+
+implementation
+
+uses
+  SysUtils;
+
+{ TMyTestCase }
+
+procedure TMyTestCase.SetUp;
+begin
+  inherited;
+  FClassInstance := TObject.Create;
+end;
+
+procedure TMyTestCase.TearDown;
+begin
+  FreeAndNil(FClassInstance);
+  inherited;
+end;
+
+procedure TMyTestCase.TestClassInitialization;
+begin
+  CheckNotNull(FClassInstance);
+end;
+
+initialization
+  RegisterTest(TMyTestCase.Suite);
+end.
+</source>
+</spoiler>
+
+тогда подключив модуль в файле проекта, мы автоматом получаем зарегистрированные тесты из него.
+
+Часть пятая: как писать?
+
+Часть шестая: как запускать?
+Запуск GUI-тестов для разработчика Delphi обычно не проблема ;). Тесты можно запустить все выбранные (F9), либо только текущий (F8). Выбрать только нужные, и т.п.
+При запуске в консольном варианте таких удобств нет, но как по мне, они и в них не нужны, т.к. основное предназначение консольных тестов - запуск на [агенте] сервере сборок в режиме Continuos Integration (на каждый коммит прогоняются тесты, и тут, понятное дело, ни о каком GUI речи нет). Кстати говоря, наш проект имеет упущение для консольных тестов: если они проваливаются, код завершения тем не менее будет нулевым, что совершенно неверно.
+так что <spoiler title="изменим наш проект так:">
+<source lang="diff">
+diff --git dunit_intro.dpr dunit_intro.dpr
+index 985c9f6..b19b9b8 100755
+--- dunit_intro.dpr
++++ dunit_intro.dpr
+@@ -5,13 +5,14 @@ program dunit_intro;
+ {$ENDIF}
+ 
+ uses
++  TestFramework,
+   TextTestRunner,
+   GUITestRunner,
+   dunit_tests1;
+ 
+ begin
+   if IsConsole then
+-    TextTestRunner.RunRegisteredTests
++    TextTestRunner.RunRegisteredTests(rxbHaltOnFailures)
+   else
+     GUITestRunner.RunRegisteredTests;
+ end.
+
+</source>
+</spoiler>
+</habracut>
