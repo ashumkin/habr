@@ -1,4 +1,4 @@
 habr
 ====
 
-Articles for habrahabr.ru site
+Articles for habr.com (ex-habrahabr.ru) site
