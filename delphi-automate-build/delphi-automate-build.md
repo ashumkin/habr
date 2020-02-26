@@ -271,7 +271,7 @@ This is RELEASE build
 ```pascal
     {$IFDEF TRIAL}
     WriteLn('This is TRIAL version');
-    {$ENDIF DEBUG}
+    {$ENDIF TRIAL}
 ```
 Добавим в Debug-конфигурацию conditional define TRIAL и посмотрим, куда оно прописывается в .dproj:
 ```
